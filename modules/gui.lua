@@ -1,0 +1,501 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+
+local GUI = {}
+GUI.__index = GUI
+
+function GUI.new(espInstance)
+    local self = setmetatable({}, GUI)
+    self.ESP = espInstance
+    self.ScreenGui = nil
+    self.MainFrame = nil
+    self.IsVisible = true
+    self.IsDragging = false
+    self.DragStart = nil
+    self.StartPos = nil
+    
+    return self
+end
+
+function GUI:CreateScreenGui()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "BRM5_ESP_GUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    
+    if gethui then
+        screenGui.Parent = gethui()
+    elseif syn and syn.protect_gui then
+        syn.protect_gui(screenGui)
+        screenGui.Parent = CoreGui
+    else
+        screenGui.Parent = CoreGui
+    end
+    
+    return screenGui
+end
+
+function GUI:CreateMainFrame()
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 450, 0, 350)
+    mainFrame.Position = UDim2.new(0.5, -225, 0.5, -175)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    mainFrame.BorderColor3 = Color3.fromRGB(60, 60, 60)
+    mainFrame.BorderSizePixel = 2
+    mainFrame.Active = true
+    mainFrame.Draggable = false
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 4)
+    corner.Parent = mainFrame
+    
+    local titleBar = Instance.new("Frame")
+    titleBar.Name = "TitleBar"
+    titleBar.Size = UDim2.new(1, 0, 0, 30)
+    titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = mainFrame
+    
+    local titleCorner = Instance.new("UICorner")
+    titleCorner.CornerRadius = UDim.new(0, 4)
+    titleCorner.Parent = titleBar
+    
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Name = "Title"
+    titleLabel.Size = UDim2.new(1, -40, 1, 0)
+    titleLabel.Position = UDim2.new(0, 10, 0, 0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = "BRM5 ESP - by Multyply"
+    titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    titleLabel.TextSize = 14
+    titleLabel.Font = Enum.Font.Code
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Parent = titleBar
+    
+    local closeButton = Instance.new("TextButton")
+    closeButton.Name = "CloseButton"
+    closeButton.Size = UDim2.new(0, 25, 0, 25)
+    closeButton.Position = UDim2.new(1, -30, 0, 2.5)
+    closeButton.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+    closeButton.BorderSizePixel = 0
+    closeButton.Text = "X"
+    closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeButton.TextSize = 14
+    closeButton.Font = Enum.Font.CodeBold
+    closeButton.Parent = titleBar
+    
+    local closeCorner = Instance.new("UICorner")
+    closeCorner.CornerRadius = UDim.new(0, 3)
+    closeCorner.Parent = closeButton
+    
+    closeButton.MouseButton1Click:Connect(function()
+        self:ToggleVisibility()
+    end)
+    
+    self:MakeDraggable(titleBar, mainFrame)
+    
+    return mainFrame
+end
+
+function GUI:MakeDraggable(handle, frame)
+    local dragging = false
+    local dragInput
+    local dragStart
+    local startPos
+    
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            dragInput = input
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+function GUI:CreateTabContainer()
+    local tabContainer = Instance.new("Frame")
+    tabContainer.Name = "TabContainer"
+    tabContainer.Size = UDim2.new(1, -10, 0, 30)
+    tabContainer.Position = UDim2.new(0, 5, 0, 35)
+    tabContainer.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    tabContainer.BorderSizePixel = 0
+    tabContainer.Parent = self.MainFrame
+    
+    local tabCorner = Instance.new("UICorner")
+    tabCorner.CornerRadius = UDim.new(0, 4)
+    tabCorner.Parent = tabContainer
+    
+    return tabContainer
+end
+
+function GUI:CreateTab(name, parent, position)
+    local tab = Instance.new("TextButton")
+    tab.Name = name .. "Tab"
+    tab.Size = UDim2.new(0, 100, 0, 25)
+    tab.Position = UDim2.new(0, position, 0, 2.5)
+    tab.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+    tab.BorderSizePixel = 0
+    tab.Text = name
+    tab.TextColor3 = Color3.fromRGB(200, 200, 200)
+    tab.TextSize = 12
+    tab.Font = Enum.Font.Code
+    tab.Parent = parent
+    
+    local tabCorner = Instance.new("UICorner")
+    tabCorner.CornerRadius = UDim.new(0, 3)
+    tabCorner.Parent = tab
+    
+    return tab
+end
+
+function GUI:CreateContentFrame(name)
+    local content = Instance.new("ScrollingFrame")
+    content.Name = name .. "Content"
+    content.Size = UDim2.new(1, -10, 1, -75)
+    content.Position = UDim2.new(0, 5, 0, 70)
+    content.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    content.BorderSizePixel = 0
+    content.ScrollBarThickness = 6
+    content.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 80)
+    content.CanvasSize = UDim2.new(0, 0, 0, 0)
+    content.Visible = false
+    content.Parent = self.MainFrame
+    
+    local contentCorner = Instance.new("UICorner")
+    contentCorner.CornerRadius = UDim.new(0, 4)
+    contentCorner.Parent = content
+    
+    local listLayout = Instance.new("UIListLayout")
+    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    listLayout.Padding = UDim.new(0, 5)
+    listLayout.Parent = content
+    
+    listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        content.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 10)
+    end)
+    
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 5)
+    padding.PaddingLeft = UDim.new(0, 5)
+    padding.PaddingRight = UDim.new(0, 5)
+    padding.PaddingBottom = UDim.new(0, 5)
+    padding.Parent = content
+    
+    return content
+end
+
+function GUI:CreateToggle(name, parent, callback, defaultValue)
+    local toggleFrame = Instance.new("Frame")
+    toggleFrame.Name = name .. "Toggle"
+    toggleFrame.Size = UDim2.new(1, -10, 0, 25)
+    toggleFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    toggleFrame.BorderSizePixel = 0
+    toggleFrame.Parent = parent
+    
+    local toggleCorner = Instance.new("UICorner")
+    toggleCorner.CornerRadius = UDim.new(0, 4)
+    toggleCorner.Parent = toggleFrame
+    
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.Size = UDim2.new(1, -35, 1, 0)
+    label.Position = UDim2.new(0, 5, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = name
+    label.TextColor3 = Color3.fromRGB(220, 220, 220)
+    label.TextSize = 12
+    label.Font = Enum.Font.Code
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = toggleFrame
+    
+    local toggleButton = Instance.new("TextButton")
+    toggleButton.Name = "Button"
+    toggleButton.Size = UDim2.new(0, 20, 0, 20)
+    toggleButton.Position = UDim2.new(1, -25, 0, 2.5)
+    toggleButton.BackgroundColor3 = defaultValue and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(180, 80, 80)
+    toggleButton.BorderSizePixel = 0
+    toggleButton.Text = ""
+    toggleButton.Parent = toggleFrame
+    
+    local buttonCorner = Instance.new("UICorner")
+    buttonCorner.CornerRadius = UDim.new(0, 3)
+    buttonCorner.Parent = toggleButton
+    
+    local enabled = defaultValue or false
+    
+    toggleButton.MouseButton1Click:Connect(function()
+        enabled = not enabled
+        toggleButton.BackgroundColor3 = enabled and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(180, 80, 80)
+        callback(enabled)
+    end)
+    
+    return toggleFrame, function() return enabled end
+end
+
+function GUI:CreateSlider(name, parent, min, max, default, callback)
+    local sliderFrame = Instance.new("Frame")
+    sliderFrame.Name = name .. "Slider"
+    sliderFrame.Size = UDim2.new(1, -10, 0, 40)
+    sliderFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    sliderFrame.BorderSizePixel = 0
+    sliderFrame.Parent = parent
+    
+    local sliderCorner = Instance.new("UICorner")
+    sliderCorner.CornerRadius = UDim.new(0, 4)
+    sliderCorner.Parent = sliderFrame
+    
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.Size = UDim2.new(1, -10, 0, 15)
+    label.Position = UDim2.new(0, 5, 0, 2)
+    label.BackgroundTransparency = 1
+    label.Text = name .. ": " .. tostring(default)
+    label.TextColor3 = Color3.fromRGB(220, 220, 220)
+    label.TextSize = 11
+    label.Font = Enum.Font.Code
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = sliderFrame
+    
+    local sliderBg = Instance.new("Frame")
+    sliderBg.Name = "SliderBg"
+    sliderBg.Size = UDim2.new(1, -20, 0, 18)
+    sliderBg.Position = UDim2.new(0, 10, 0, 20)
+    sliderBg.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    sliderBg.BorderSizePixel = 0
+    sliderBg.Parent = sliderFrame
+    
+    local sliderBgCorner = Instance.new("UICorner")
+    sliderBgCorner.CornerRadius = UDim.new(0, 3)
+    sliderBgCorner.Parent = sliderBg
+    
+    local sliderFill = Instance.new("Frame")
+    sliderFill.Name = "SliderFill"
+    sliderFill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+    sliderFill.BackgroundColor3 = Color3.fromRGB(80, 150, 220)
+    sliderFill.BorderSizePixel = 0
+    sliderFill.Parent = sliderBg
+    
+    local sliderFillCorner = Instance.new("UICorner")
+    sliderFillCorner.CornerRadius = UDim.new(0, 3)
+    sliderFillCorner.Parent = sliderFill
+    
+    local value = default
+    local dragging = false
+    
+    local function updateSlider(input)
+        local pos = (input.Position.X - sliderBg.AbsolutePosition.X) / sliderBg.AbsoluteSize.X
+        pos = math.clamp(pos, 0, 1)
+        value = math.floor(min + (max - min) * pos)
+        sliderFill.Size = UDim2.new(pos, 0, 1, 0)
+        label.Text = name .. ": " .. tostring(value)
+        callback(value)
+    end
+    
+    sliderBg.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            updateSlider(input)
+        end
+    end)
+    
+    sliderBg.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            updateSlider(input)
+        end
+    end)
+    
+    return sliderFrame, function() return value end
+end
+
+function GUI:CreateColorPicker(name, parent, defaultColor, callback)
+    local pickerFrame = Instance.new("Frame")
+    pickerFrame.Name = name .. "ColorPicker"
+    pickerFrame.Size = UDim2.new(1, -10, 0, 25)
+    pickerFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    pickerFrame.BorderSizePixel = 0
+    pickerFrame.Parent = parent
+    
+    local pickerCorner = Instance.new("UICorner")
+    pickerCorner.CornerRadius = UDim.new(0, 4)
+    pickerCorner.Parent = pickerFrame
+    
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.Size = UDim2.new(1, -35, 1, 0)
+    label.Position = UDim2.new(0, 5, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = name
+    label.TextColor3 = Color3.fromRGB(220, 220, 220)
+    label.TextSize = 12
+    label.Font = Enum.Font.Code
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = pickerFrame
+    
+    local colorDisplay = Instance.new("Frame")
+    colorDisplay.Name = "ColorDisplay"
+    colorDisplay.Size = UDim2.new(0, 50, 0, 20)
+    colorDisplay.Position = UDim2.new(1, -55, 0, 2.5)
+    colorDisplay.BackgroundColor3 = defaultColor
+    colorDisplay.BorderSizePixel = 0
+    colorDisplay.Parent = pickerFrame
+    
+    local displayCorner = Instance.new("UICorner")
+    displayCorner.CornerRadius = UDim.new(0, 3)
+    displayCorner.Parent = colorDisplay
+    
+    local currentColor = defaultColor
+    
+    local colorButton = Instance.new("TextButton")
+    colorButton.Size = UDim2.new(1, 0, 1, 0)
+    colorButton.BackgroundTransparency = 1
+    colorButton.Text = ""
+    colorButton.Parent = colorDisplay
+    
+    colorButton.MouseButton1Click:Connect(function()
+        callback(currentColor)
+    end)
+    
+    return pickerFrame, colorDisplay, function(newColor)
+        currentColor = newColor
+        colorDisplay.BackgroundColor3 = newColor
+    end
+end
+
+function GUI:CreateSection(name, parent)
+    local section = Instance.new("Frame")
+    section.Name = name .. "Section"
+    section.Size = UDim2.new(1, -10, 0, 20)
+    section.BackgroundTransparency = 1
+    section.Parent = parent
+    
+    local sectionLabel = Instance.new("TextLabel")
+    sectionLabel.Name = "Label"
+    sectionLabel.Size = UDim2.new(1, 0, 1, 0)
+    sectionLabel.BackgroundTransparency = 1
+    sectionLabel.Text = "━━━ " .. name .. " ━━━"
+    sectionLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+    sectionLabel.TextSize = 13
+    sectionLabel.Font = Enum.Font.CodeBold
+    sectionLabel.TextXAlignment = Enum.TextXAlignment.Center
+    sectionLabel.Parent = section
+    
+    return section
+end
+
+function GUI:ToggleVisibility()
+    self.IsVisible = not self.IsVisible
+    self.MainFrame.Visible = self.IsVisible
+end
+
+function GUI:Initialize()
+    self.ScreenGui = self:CreateScreenGui()
+    self.MainFrame = self:CreateMainFrame()
+    self.MainFrame.Parent = self.ScreenGui
+    
+    local tabContainer = self:CreateTabContainer()
+    local visualsTab = self:CreateTab("Visuals", tabContainer, 5)
+    
+    local visualsContent = self:CreateContentFrame("Visuals")
+    visualsContent.Visible = true
+    
+    visualsTab.MouseButton1Click:Connect(function()
+        visualsContent.Visible = true
+        visualsTab.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+    end)
+    
+    self:CreateSection("Player ESP", visualsContent)
+    
+    self:CreateToggle("Enable Player ESP", visualsContent, function(enabled)
+        self.ESP:SetPlayerESPEnabled(enabled)
+    end, false)
+    
+    self:CreateToggle("Player Chams", visualsContent, function(enabled)
+        self.ESP:SetPlayerChamsEnabled(enabled)
+    end, false)
+    
+    self:CreateSlider("Player Transparency", visualsContent, 0, 100, 50, function(value)
+        self.ESP:SetPlayerTransparency(value / 100)
+    end)
+    
+    local playerColorPicker, playerColorDisplay, setPlayerColor = self:CreateColorPicker("Player Color", visualsContent, Color3.fromRGB(0, 255, 0), function(color)
+    end)
+    
+    self:CreateToggle("Player Outline", visualsContent, function(enabled)
+        self.ESP:SetPlayerOutlineEnabled(enabled)
+    end, true)
+    
+    self:CreateSlider("Player Max Distance", visualsContent, 0, 5000, 1000, function(value)
+        self.ESP:SetPlayerMaxDistance(value)
+    end)
+    
+    self:CreateSection("Zombie ESP", visualsContent)
+    
+    self:CreateToggle("Enable Zombie ESP", visualsContent, function(enabled)
+        self.ESP:SetZombieESPEnabled(enabled)
+    end, false)
+    
+    self:CreateToggle("Zombie Chams", visualsContent, function(enabled)
+        self.ESP:SetZombieChamsEnabled(enabled)
+    end, false)
+    
+    self:CreateSlider("Zombie Transparency", visualsContent, 0, 100, 50, function(value)
+        self.ESP:SetZombieTransparency(value / 100)
+    end)
+    
+    local zombieColorPicker, zombieColorDisplay, setZombieColor = self:CreateColorPicker("Zombie Color", visualsContent, Color3.fromRGB(255, 0, 0), function(color)
+    end)
+    
+    self:CreateToggle("Zombie Outline", visualsContent, function(enabled)
+        self.ESP:SetZombieOutlineEnabled(enabled)
+    end, true)
+    
+    self:CreateSlider("Zombie Max Distance", visualsContent, 0, 5000, 1000, function(value)
+        self.ESP:SetZombieMaxDistance(value)
+    end)
+    
+    local colorChangeConnection
+    colorChangeConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if not gameProcessed and input.KeyCode == Enum.KeyCode.Insert then
+            self:ToggleVisibility()
+        end
+    end)
+    
+    print("GUI initialized - Press INSERT to toggle")
+end
+
+return GUI
