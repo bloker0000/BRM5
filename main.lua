@@ -6,7 +6,7 @@ local CoreGui = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
 
-local GITHUB_REPO = "https://raw.githubusercontent.com/bloker0000/rblx-stuff/refs/heads/main/main.lua?token=GHSAT0AAAAAADOGSU4JHVSJ5OLYWUJ6MBQ42INYZKA"
+local GITHUB_REPO = "https://raw.githubusercontent.com/bloker0000/rblx-stuff/refs/heads/main/main.lua"
 
 local function loadModule(moduleName)
     local success, result = pcall(function()
