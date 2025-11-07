@@ -410,8 +410,104 @@ function GUI.new(espInstance)
     self.IsDragging = false
     self.DragStart = nil
     self.StartPos = nil
+    self.Notifications = {}
     
     return self
+end
+
+function GUI:CreateNotification(title, message, duration)
+    duration = duration or 3
+    
+    if not self.ScreenGui then
+        return
+    end
+    
+    local notif = Instance.new("Frame")
+    notif.Name = "Notification"
+    notif.Size = UDim2.new(0, 300, 0, 80)
+    notif.Position = UDim2.new(1, -320, 1, 100)
+    notif.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    notif.BorderColor3 = Color3.fromRGB(60, 60, 60)
+    notif.BorderSizePixel = 2
+    notif.Parent = self.ScreenGui
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = notif
+    
+    local titleBar = Instance.new("Frame")
+    titleBar.Name = "TitleBar"
+    titleBar.Size = UDim2.new(1, 0, 0, 25)
+    titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = notif
+    
+    local titleCorner = Instance.new("UICorner")
+    titleCorner.CornerRadius = UDim.new(0, 6)
+    titleCorner.Parent = titleBar
+    
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1, -10, 1, 0)
+    titleLabel.Position = UDim2.new(0, 5, 0, 0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = title
+    titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    titleLabel.TextSize = 13
+    titleLabel.Font = Enum.Font.CodeBold
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Parent = titleBar
+    
+    local messageLabel = Instance.new("TextLabel")
+    messageLabel.Size = UDim2.new(1, -10, 1, -30)
+    messageLabel.Position = UDim2.new(0, 5, 0, 28)
+    messageLabel.BackgroundTransparency = 1
+    messageLabel.Text = message
+    messageLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    messageLabel.TextSize = 11
+    messageLabel.Font = Enum.Font.Code
+    messageLabel.TextXAlignment = Enum.TextXAlignment.Left
+    messageLabel.TextYAlignment = Enum.TextYAlignment.Top
+    messageLabel.TextWrapped = true
+    messageLabel.Parent = notif
+    
+    table.insert(self.Notifications, notif)
+    
+    local targetY = 1 - (#self.Notifications * 90) - 20
+    notif:TweenPosition(
+        UDim2.new(1, -320, 0, targetY),
+        Enum.EasingDirection.Out,
+        Enum.EasingStyle.Back,
+        0.5,
+        true
+    )
+    
+    task.delay(duration, function()
+        notif:TweenPosition(
+            UDim2.new(1, 20, 0, targetY),
+            Enum.EasingDirection.In,
+            Enum.EasingStyle.Back,
+            0.3,
+            true,
+            function()
+                notif:Destroy()
+                local index = table.find(self.Notifications, notif)
+                if index then
+                    table.remove(self.Notifications, index)
+                end
+                
+                for i, n in ipairs(self.Notifications) do
+                    local newY = 1 - (i * 90) - 20
+                    n:TweenPosition(
+                        UDim2.new(1, -320, 0, newY),
+                        Enum.EasingDirection.Out,
+                        Enum.EasingStyle.Quad,
+                        0.3,
+                        true
+                    )
+                end
+            end
+        )
+    end)
 end
 
 function GUI:CreateScreenGui()
@@ -420,13 +516,19 @@ function GUI:CreateScreenGui()
     screenGui.ResetOnSpawn = false
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     
-    if gethui then
-        screenGui.Parent = gethui()
-    elseif syn and syn.protect_gui then
-        syn.protect_gui(screenGui)
-        screenGui.Parent = CoreGui
-    else
-        screenGui.Parent = CoreGui
+    local success = pcall(function()
+        if gethui then
+            screenGui.Parent = gethui()
+        elseif syn and syn.protect_gui then
+            syn.protect_gui(screenGui)
+            screenGui.Parent = CoreGui
+        else
+            screenGui.Parent = CoreGui
+        end
+    end)
+    
+    if not success then
+        screenGui.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
     end
     
     return screenGui
@@ -816,87 +918,124 @@ function GUI:ToggleVisibility()
 end
 
 function GUI:Initialize()
-    self.ScreenGui = self:CreateScreenGui()
-    self.MainFrame = self:CreateMainFrame()
-    self.MainFrame.Parent = self.ScreenGui
-    
-    local tabContainer = self:CreateTabContainer()
-    local visualsTab = self:CreateTab("Visuals", tabContainer, 5)
-    
-    local visualsContent = self:CreateContentFrame("Visuals")
-    visualsContent.Visible = true
-    
-    visualsTab.MouseButton1Click:Connect(function()
+    local success, err = pcall(function()
+        self.ScreenGui = self:CreateScreenGui()
+        self.MainFrame = self:CreateMainFrame()
+        self.MainFrame.Parent = self.ScreenGui
+        
+        local tabContainer = self:CreateTabContainer()
+        local visualsTab = self:CreateTab("Visuals", tabContainer, 5)
+        
+        local visualsContent = self:CreateContentFrame("Visuals")
         visualsContent.Visible = true
-        visualsTab.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+        
+        visualsTab.MouseButton1Click:Connect(function()
+            visualsContent.Visible = true
+            visualsTab.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+        end)
+        
+        self:CreateSection("Player ESP", visualsContent)
+        
+        self:CreateToggle("Enable Player ESP", visualsContent, function(enabled)
+            self.ESP:SetPlayerESPEnabled(enabled)
+            if enabled then
+                self:CreateNotification("Player ESP", "Player ESP enabled", 2)
+            else
+                self:CreateNotification("Player ESP", "Player ESP disabled", 2)
+            end
+        end, false)
+        
+        self:CreateToggle("Player Chams", visualsContent, function(enabled)
+            self.ESP:SetPlayerChamsEnabled(enabled)
+            if enabled then
+                self:CreateNotification("Chams", "Player chams enabled", 2)
+            else
+                self:CreateNotification("Chams", "Player chams disabled", 2)
+            end
+        end, false)
+        
+        self:CreateSlider("Player Transparency", visualsContent, 0, 100, 50, function(value)
+            self.ESP:SetPlayerTransparency(value / 100)
+        end)
+        
+        local playerColorPicker, playerColorDisplay, setPlayerColor = self:CreateColorPicker("Player Color", visualsContent, Color3.fromRGB(0, 255, 0), function(color)
+        end)
+        
+        self:CreateToggle("Player Outline", visualsContent, function(enabled)
+            self.ESP:SetPlayerOutlineEnabled(enabled)
+        end, true)
+        
+        self:CreateSlider("Player Max Distance", visualsContent, 0, 5000, 1000, function(value)
+            self.ESP:SetPlayerMaxDistance(value)
+        end)
+        
+        self:CreateSection("Zombie ESP", visualsContent)
+        
+        self:CreateToggle("Enable Zombie ESP", visualsContent, function(enabled)
+            self.ESP:SetZombieESPEnabled(enabled)
+            if enabled then
+                self:CreateNotification("Zombie ESP", "Zombie ESP enabled", 2)
+            else
+                self:CreateNotification("Zombie ESP", "Zombie ESP disabled", 2)
+            end
+        end, false)
+        
+        self:CreateToggle("Zombie Chams", visualsContent, function(enabled)
+            self.ESP:SetZombieChamsEnabled(enabled)
+            if enabled then
+                self:CreateNotification("Chams", "Zombie chams enabled", 2)
+            else
+                self:CreateNotification("Chams", "Zombie chams disabled", 2)
+            end
+        end, false)
+        
+        self:CreateSlider("Zombie Transparency", visualsContent, 0, 100, 50, function(value)
+            self.ESP:SetZombieTransparency(value / 100)
+        end)
+        
+        local zombieColorPicker, zombieColorDisplay, setZombieColor = self:CreateColorPicker("Zombie Color", visualsContent, Color3.fromRGB(255, 0, 0), function(color)
+        end)
+        
+        self:CreateToggle("Zombie Outline", visualsContent, function(enabled)
+            self.ESP:SetZombieOutlineEnabled(enabled)
+        end, true)
+        
+        self:CreateSlider("Zombie Max Distance", visualsContent, 0, 5000, 1000, function(value)
+            self.ESP:SetZombieMaxDistance(value)
+        end)
+        
+        UserInputService.InputBegan:Connect(function(input, gameProcessed)
+            if not gameProcessed and input.KeyCode == Enum.KeyCode.Insert then
+                self:ToggleVisibility()
+            end
+        end)
     end)
     
-    self:CreateSection("Player ESP", visualsContent)
-    
-    self:CreateToggle("Enable Player ESP", visualsContent, function(enabled)
-        self.ESP:SetPlayerESPEnabled(enabled)
-    end, false)
-    
-    self:CreateToggle("Player Chams", visualsContent, function(enabled)
-        self.ESP:SetPlayerChamsEnabled(enabled)
-    end, false)
-    
-    self:CreateSlider("Player Transparency", visualsContent, 0, 100, 50, function(value)
-        self.ESP:SetPlayerTransparency(value / 100)
-    end)
-    
-    local playerColorPicker, playerColorDisplay, setPlayerColor = self:CreateColorPicker("Player Color", visualsContent, Color3.fromRGB(0, 255, 0), function(color)
-    end)
-    
-    self:CreateToggle("Player Outline", visualsContent, function(enabled)
-        self.ESP:SetPlayerOutlineEnabled(enabled)
-    end, true)
-    
-    self:CreateSlider("Player Max Distance", visualsContent, 0, 5000, 1000, function(value)
-        self.ESP:SetPlayerMaxDistance(value)
-    end)
-    
-    self:CreateSection("Zombie ESP", visualsContent)
-    
-    self:CreateToggle("Enable Zombie ESP", visualsContent, function(enabled)
-        self.ESP:SetZombieESPEnabled(enabled)
-    end, false)
-    
-    self:CreateToggle("Zombie Chams", visualsContent, function(enabled)
-        self.ESP:SetZombieChamsEnabled(enabled)
-    end, false)
-    
-    self:CreateSlider("Zombie Transparency", visualsContent, 0, 100, 50, function(value)
-        self.ESP:SetZombieTransparency(value / 100)
-    end)
-    
-    local zombieColorPicker, zombieColorDisplay, setZombieColor = self:CreateColorPicker("Zombie Color", visualsContent, Color3.fromRGB(255, 0, 0), function(color)
-    end)
-    
-    self:CreateToggle("Zombie Outline", visualsContent, function(enabled)
-        self.ESP:SetZombieOutlineEnabled(enabled)
-    end, true)
-    
-    self:CreateSlider("Zombie Max Distance", visualsContent, 0, 5000, 1000, function(value)
-        self.ESP:SetZombieMaxDistance(value)
-    end)
-    
-    local colorChangeConnection
-    colorChangeConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
-        if not gameProcessed and input.KeyCode == Enum.KeyCode.Insert then
-            self:ToggleVisibility()
-        end
-    end)
-    
-    print("GUI initialized - Press INSERT to toggle")
+    if success then
+        task.wait(0.5)
+        self:CreateNotification("BRM5 ESP", "Loaded successfully! Press INSERT to toggle", 3)
+    else
+        warn("GUI initialization error: " .. tostring(err))
+    end
 end
 
-print("BRM5 ESP - Created by Multyply")
-print("Initializing...")
+local function Initialize()
+    local success, err = pcall(function()
+        task.wait(1)
+        
+        if not game:IsLoaded() then
+            game.Loaded:Wait()
+        end
+        
+        local espInstance = ESP.new()
+        local guiInstance = GUI.new(espInstance)
+        
+        guiInstance:Initialize()
+    end)
+    
+    if not success then
+        warn("BRM5 ESP Error: " .. tostring(err))
+    end
+end
 
-local espInstance = ESP.new()
-local guiInstance = GUI.new(espInstance)
-
-guiInstance:Initialize()
-
-print("BRM5 ESP initialized successfully!")
+Initialize()
