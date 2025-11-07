@@ -453,7 +453,7 @@ function GUI:CreateNotification(title, message, duration)
     titleLabel.Text = title
     titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
     titleLabel.TextSize = 13
-    titleLabel.Font = Enum.Font.CodeBold
+    titleLabel.Font = Enum.Font.SourceSansBold
     titleLabel.TextXAlignment = Enum.TextXAlignment.Left
     titleLabel.Parent = titleBar
     
@@ -581,7 +581,7 @@ function GUI:CreateMainFrame()
     closeButton.Text = "X"
     closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
     closeButton.TextSize = 14
-    closeButton.Font = Enum.Font.CodeBold
+    closeButton.Font = Enum.Font.SourceSansBold
     closeButton.Parent = titleBar
     
     local closeCorner = Instance.new("UICorner")
@@ -905,7 +905,7 @@ function GUI:CreateSection(name, parent)
     sectionLabel.Text = "━━━ " .. name .. " ━━━"
     sectionLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
     sectionLabel.TextSize = 13
-    sectionLabel.Font = Enum.Font.CodeBold
+    sectionLabel.Font = Enum.Font.SourceSansBold
     sectionLabel.TextXAlignment = Enum.TextXAlignment.Center
     sectionLabel.Parent = section
     
