@@ -13,7 +13,12 @@ end
 globalEnv.BRM5_ESP = globalEnv.BRM5_ESP or {}
 
 local previousState = globalEnv.BRM5_ESP
-if previousState.Active then
+local savedSettings
+if typeof(previousState) == "table" then
+	savedSettings = previousState.SavedSettings
+end
+
+if typeof(previousState) == "table" and previousState.Active then
 	local prevCleanup = previousState.Cleanup
 	if typeof(prevCleanup) == "function" then
 		local ok, err = pcall(prevCleanup)
@@ -23,6 +28,31 @@ if previousState.Active then
 	end
 	globalEnv.BRM5_ESP = {}
 end
+
+local function copySettings(source)
+	local clone = {}
+	if typeof(source) == "table" then
+		for key, value in pairs(source) do
+			clone[key] = value
+		end
+	end
+	return clone
+end
+
+local function resolveSettings(source)
+	local resolved = {}
+	for key, defaultValue in pairs(DEFAULT_SETTINGS) do
+		local candidate = source and source[key]
+		if candidate ~= nil and typeof(candidate) == typeof(defaultValue) then
+			resolved[key] = candidate
+		else
+			resolved[key] = defaultValue
+		end
+	end
+	return resolved
+end
+
+local ESPSettings = resolveSettings(savedSettings)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -35,7 +65,7 @@ local Workspace = workspace
 local UPDATE_INTERVAL = 0.05
 local MIN_DISTANCE = 15
 
-local ESPSettings = {
+local DEFAULT_SETTINGS = {
 	Enabled = true,
 	ChamsEnabled = true,
 	OutlineEnabled = true,
@@ -73,6 +103,7 @@ local Theme = {
 local state = {
 	Connections = {},
 	Active = true,
+	SavedSettings = copySettings(ESPSettings),
 }
 
 globalEnv.BRM5_ESP = state
@@ -87,6 +118,10 @@ state.TrackedModels = TrackedModels
 state.OverlayPool = OverlayPool
 state.ColorDisplays = ColorDisplays
 state.OverlayRoot = nil
+
+local function SaveSettings()
+	state.SavedSettings = copySettings(ESPSettings)
+end
 
 local function TrackConnection(connection)
 	if connection then
@@ -185,13 +220,13 @@ local function GetOrCreateOverlayEntry()
 	local infoLabel = Instance.new("TextLabel")
 	infoLabel.Name = "Info"
 	infoLabel.AnchorPoint = Vector2.new(0, 1)
-	infoLabel.BackgroundColor3 = Theme.Header
-	infoLabel.BackgroundTransparency = 0.15
+	infoLabel.BackgroundTransparency = 1
 	infoLabel.BorderSizePixel = 0
 	infoLabel.Text = ""
 	infoLabel.TextColor3 = Theme.TextPrimary
 	infoLabel.Font = Enum.Font.Arcade
-	infoLabel.TextScaled = true
+	infoLabel.TextScaled = false
+	infoLabel.TextSize = 16
 	infoLabel.Visible = false
 	infoLabel.ZIndex = 42
 	infoLabel.Parent = overlayFrame
@@ -200,11 +235,6 @@ local function GetOrCreateOverlayEntry()
 	infoPadding.PaddingLeft = UDim.new(0, 6)
 	infoPadding.PaddingRight = UDim.new(0, 6)
 	infoPadding.Parent = infoLabel
-
-	local infoConstraint = Instance.new("UITextSizeConstraint")
-	infoConstraint.MinTextSize = 10
-	infoConstraint.MaxTextSize = 22
-	infoConstraint.Parent = infoLabel
 
 	local healthFrame = Instance.new("Frame")
 	healthFrame.Name = "Health"
@@ -236,7 +266,6 @@ local function GetOrCreateOverlayEntry()
 		Overlay = overlayFrame,
 		BoxFrame = boxFrame,
 		InfoLabel = infoLabel,
-		InfoConstraint = infoConstraint,
 		HealthFrame = healthFrame,
 		HealthFill = healthFill,
 	}
@@ -258,9 +287,6 @@ local function ReturnOverlayEntry(entry)
 	if entry.InfoLabel then
 		entry.InfoLabel.Text = ""
 		entry.InfoLabel.Visible = false
-	end
-	if entry.InfoConstraint then
-		entry.InfoConstraint.MaxTextSize = 22
 	end
 
 	if entry.HealthFrame then
@@ -435,19 +461,29 @@ local function UpdateESP(model, data)
 	local boxY = bounds.MinY
 	local viewportSize = camera.ViewportSize
 
-	local minBoxWidth = 36
-	local minBoxHeight = 60
+	local minBoxWidth = 24
+	local minBoxHeight = 40
+	local maxBoxHeight = 260
+	local maxBoxWidth = 220
 
 	if boxWidth < minBoxWidth then
 		local delta = (minBoxWidth - boxWidth) * 0.5
 		boxX = boxX - delta
 		boxWidth = minBoxWidth
+	elseif boxWidth > maxBoxWidth then
+		local delta = (boxWidth - maxBoxWidth) * 0.5
+		boxX = boxX + delta
+		boxWidth = maxBoxWidth
 	end
 
 	if boxHeight < minBoxHeight then
 		local delta = (minBoxHeight - boxHeight) * 0.5
 		boxY = boxY - delta
 		boxHeight = minBoxHeight
+	elseif boxHeight > maxBoxHeight then
+		local delta = (boxHeight - maxBoxHeight) * 0.5
+		boxY = boxY + delta
+		boxHeight = maxBoxHeight
 	end
 
 	overlayEntry.Overlay.Visible = true
@@ -458,6 +494,7 @@ local function UpdateESP(model, data)
 	if boxFrame then
 		boxFrame.Visible = ESPSettings.Show2DBox
 		boxFrame.BorderColor3 = Theme.Border
+		boxFrame.BorderSizePixel = math.clamp(math.floor(boxHeight / 140) + 1, 1, 3)
 		boxFrame.Size = UDim2.new(1, 0, 1, 0)
 	end
 
@@ -472,19 +509,17 @@ local function UpdateESP(model, data)
 		end
 		local infoText = table.concat(segments, " | ")
 		if infoText ~= "" then
-			local infoHeight = math.clamp(boxHeight * 0.22, 14, 24)
+			local infoHeight = math.clamp(boxHeight * 0.2, 10, 30)
 			infoLabel.Visible = true
 			infoLabel.Size = UDim2.fromOffset(boxWidth, infoHeight)
-			infoLabel.Position = UDim2.new(0, 0, 0, -math.floor(infoHeight + 6))
+			local labelOffset = math.max(4, math.floor(infoHeight * 0.5))
+			infoLabel.Position = UDim2.new(0, 0, 0, -labelOffset - infoHeight)
 			infoLabel.Text = infoText
 			infoLabel.TextColor3 = Theme.TextPrimary
-			infoLabel.BackgroundColor3 = Theme.Header
-			infoLabel.BackgroundTransparency = 0.15
+			infoLabel.BackgroundTransparency = 1
 			infoLabel.TextXAlignment = Enum.TextXAlignment.Center
 			infoLabel.TextYAlignment = Enum.TextYAlignment.Center
-			if overlayEntry.InfoConstraint then
-				overlayEntry.InfoConstraint.MaxTextSize = math.max(12, math.floor(infoHeight * 0.75))
-			end
+			infoLabel.TextSize = math.clamp(math.floor(infoHeight * 0.7), 11, 26)
 		else
 			infoLabel.Visible = false
 		end
@@ -495,16 +530,17 @@ local function UpdateESP(model, data)
 	if healthFrame and healthFill then
 		if ESPSettings.ShowHealth then
 			healthFrame.Visible = true
-			local healthWidth = 8
-			local spacing = 6
+			local healthWidth = math.clamp(math.floor(boxHeight * 0.08), 4, 12)
+			local spacing = math.clamp(math.floor(boxWidth * 0.06), 4, 14)
+			local verticalPadding = math.clamp(math.floor(boxHeight * 0.06), 2, 12)
 			local preferredX = -healthWidth - spacing
 			if boxX + preferredX < 0 then
 				preferredX = boxWidth + spacing
 			elseif viewportSize and (boxX + preferredX + healthWidth) > viewportSize.X then
 				preferredX = boxWidth + spacing
 			end
-			healthFrame.Position = UDim2.new(0, preferredX, 0, 2)
-			healthFrame.Size = UDim2.new(0, healthWidth, 1, -4)
+			healthFrame.Position = UDim2.new(0, preferredX, 0, verticalPadding)
+			healthFrame.Size = UDim2.new(0, healthWidth, 1, -verticalPadding * 2)
 			healthFrame.BackgroundColor3 = ESPSettings.HealthBarBackColor
 
 			local health, maxHealth = GetModelHealth(model)
@@ -610,7 +646,7 @@ local function RefreshAllVisuals()
 			end
 			if overlayEntry.InfoLabel then
 				overlayEntry.InfoLabel.TextColor3 = Theme.TextPrimary
-				overlayEntry.InfoLabel.BackgroundColor3 = Theme.Header
+				overlayEntry.InfoLabel.BackgroundTransparency = 1
 			end
 		end
 	end
@@ -801,6 +837,7 @@ local function CreateGUI()
 			if callback then
 				callback()
 			end
+			SaveSettings()
 		end))
 	end
 
@@ -864,6 +901,7 @@ local function CreateGUI()
 			if callback then
 				callback()
 			end
+			SaveSettings()
 		end
 
 		TrackConnection(sliderBack.InputBegan:Connect(function(input)
@@ -971,6 +1009,7 @@ local function CreateGUI()
 		if applySettings and colorPickerModal.Property then
 			ESPSettings[colorPickerModal.Property] = newColor
 			RefreshAllVisuals()
+			SaveSettings()
 		end
 	end
 
@@ -1264,6 +1303,7 @@ local function CreateGUI()
 			if colorPickerModal.Property then
 				ESPSettings[colorPickerModal.Property] = colorPickerModal.InitialColor
 				RefreshAllVisuals()
+				SaveSettings()
 			end
 			colorPickerModal.Property = nil
 			colorPickerModal.Entry = nil
@@ -1276,6 +1316,7 @@ local function CreateGUI()
 			if colorPickerModal.Property then
 				ESPSettings[colorPickerModal.Property] = colorPickerModal.InitialColor
 				RefreshAllVisuals()
+				SaveSettings()
 			end
 			colorPickerModal.Property = nil
 			colorPickerModal.Entry = nil
@@ -1285,6 +1326,7 @@ local function CreateGUI()
 		end))
 
 		TrackConnection(applyButton.MouseButton1Click:Connect(function()
+			SaveSettings()
 			colorPickerModal.Property = nil
 			colorPickerModal.Entry = nil
 			colorPickerModal.ActiveSlider = nil
