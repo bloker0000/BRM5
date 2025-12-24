@@ -78,11 +78,23 @@ local DEFAULT_SETTINGS = {
 
 local CONFIG_FILE = "BRM5_ESP_Config.json"
 
+local mathFloor = math.floor
+local mathClamp = math.clamp
+local mathMin = math.min
+local mathMax = math.max
+local mathSqrt = math.sqrt
+local mathHuge = math.huge
+local tableInsert = table.insert
+local tableRemove = table.remove
+local tableClear = table.clear
+local tableConcat = table.concat
+local tableSort = table.sort
+
 local function serializeColor(color)
     return {
-        R = math.floor(color.R * 255),
-        G = math.floor(color.G * 255),
-        B = math.floor(color.B * 255)
+        R = mathFloor(color.R * 255),
+        G = mathFloor(color.G * 255),
+        B = mathFloor(color.B * 255)
     }
 end
 
@@ -205,6 +217,7 @@ local Workspace = workspace
 
 local UPDATE_INTERVAL = 0.016
 local MIN_DISTANCE = 8
+local MIN_DISTANCE_SQ = MIN_DISTANCE * MIN_DISTANCE
 
 local TrackedModels = {}
 
@@ -267,14 +280,19 @@ local function WorldToScreen(position)
     return Vector2.new(screenPos.X, screenPos.Y), onScreen
 end
 
-local function GetDistanceFromMouse(screenPos)
+local function GetDistanceFromMouseSq(screenPos)
     local mousePos = GetMousePosition()
-    return (screenPos - mousePos).Magnitude
+    local dx = screenPos.X - mousePos.X
+    local dy = screenPos.Y - mousePos.Y
+    return dx * dx + dy * dy
 end
 
-local function IsInFOV(screenPos)
-    local distance = GetDistanceFromMouse(screenPos)
-    return distance <= ESPSettings.AimbotFOV
+local function GetDistanceFromMouse(screenPos)
+    return mathSqrt(GetDistanceFromMouseSq(screenPos))
+end
+
+local function IsInFOV(screenPos, fovSq)
+    return GetDistanceFromMouseSq(screenPos) <= fovSq
 end
 
 local function GetTargetPart(model)
@@ -308,6 +326,9 @@ local function GetTargetPart(model)
     return model.PrimaryPart
 end
 
+local CachedRayParams = RaycastParams.new()
+CachedRayParams.FilterType = Enum.RaycastFilterType.Exclude
+
 local function IsTargetVisible(origin, targetPosition, targetModel)
     if not ESPSettings.AimbotVisibilityCheck then
         return true
@@ -320,19 +341,17 @@ local function IsTargetVisible(origin, targetPosition, targetModel)
         return true
     end
 
-    local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
-
     local ignoreList = {}
-    if LocalPlayer.Character then
-        table.insert(ignoreList, LocalPlayer.Character)
+    local char = LocalPlayer.Character
+    if char then
+        ignoreList[1] = char
     end
     if targetModel then
-        table.insert(ignoreList, targetModel)
+        tableInsert(ignoreList, targetModel)
     end
-    rayParams.FilterDescendantsInstances = ignoreList
+    CachedRayParams.FilterDescendantsInstances = ignoreList
 
-    local rayResult = Workspace:Raycast(origin, direction.Unit * (distance - 0.5), rayParams)
+    local rayResult = Workspace:Raycast(origin, direction.Unit * (distance - 0.5), CachedRayParams)
 
     if rayResult then
         if targetModel and rayResult.Instance:IsDescendantOf(targetModel) then
@@ -370,63 +389,82 @@ end
 local function GetValidTargets()
     local targets = {}
     local camera = GetCamera()
+    local stickyTarget = nil
 
     if not camera then
-        return targets
+        return targets, stickyTarget
     end
 
     local origin = camera.CFrame.Position
+    local maxDistSq = ESPSettings.AimbotMaxDistance * ESPSettings.AimbotMaxDistance
+    local fovSq = ESPSettings.AimbotFOV * ESPSettings.AimbotFOV
+    local targetPlayers = ESPSettings.AimbotTargetPlayers
+    local targetZombies = ESPSettings.AimbotTargetZombies
+    local minHealth = ESPSettings.AimbotMinHealth
+    local checkVisibility = ESPSettings.AimbotVisibilityCheck
+    local stickyEnabled = ESPSettings.AimbotStickyTarget
+    local currentTarget = AimbotState.CurrentTarget
+    local localChar = LocalPlayer.Character
 
     for model, data in pairs(TrackedModels) do
-        if model.Parent then
-            if model == LocalPlayer.Character then
-                -- Skip: standard character check
-            elseif Players:GetPlayerFromCharacter(model) == LocalPlayer then
-                -- Skip: player owns this character
-            else
-                local entityType = data.EntityType
-                local shouldProcess = true
+        if model.Parent and model ~= localChar then
+            local entityType = data.EntityType
+            local shouldProcess = (entityType == "Player" and targetPlayers) or 
+                                  (entityType == "Zombie" and targetZombies)
 
-                if entityType == "Player" and not ESPSettings.AimbotTargetPlayers then
-                    shouldProcess = false
-                elseif entityType == "Zombie" and not ESPSettings.AimbotTargetZombies then
-                    shouldProcess = false
-                end
+            if shouldProcess then
+                local health, maxHealth = GetEntityHealth(model)
+                if health > minHealth then
+                    local targetPart = GetTargetPart(model)
+                    if targetPart then
+                        local targetPos = targetPart.Position
+                        local delta = targetPos - origin
+                        local distSq = delta.X * delta.X + delta.Y * delta.Y + delta.Z * delta.Z
 
-                if shouldProcess then
-                    local health, maxHealth = GetEntityHealth(model)
-                    if health > ESPSettings.AimbotMinHealth then
-                        local targetPart = GetTargetPart(model)
-                        if targetPart then
-                            local targetPos = targetPart.Position
-                            local distance = (targetPos - origin).Magnitude
+                        if distSq <= maxDistSq then
+                            local distance = mathSqrt(distSq)
+                            local velocity = GetEntityVelocity(model)
+                            local predictedPos = PredictPosition(targetPos, velocity,
+                                ESPSettings.AimbotPredictionAmount)
 
-                            if distance <= ESPSettings.AimbotMaxDistance then
-                                local velocity = GetEntityVelocity(model)
-                                local predictedPos = PredictPosition(targetPos, velocity,
-                                    ESPSettings.AimbotPredictionAmount)
-
-                                local screenPos, onScreen = WorldToScreen(predictedPos)
-                                if screenPos then
-                                    local inFOV = IsInFOV(screenPos)
-                                    if inFOV then
-                                        local isVisible = not ESPSettings.AimbotVisibilityCheck or
-                                                              IsTargetVisible(origin, predictedPos, model)
-                                        if isVisible then
-                                            table.insert(targets, {
-                                                Model = model,
-                                                Part = targetPart,
-                                                Position = predictedPos,
-                                                ScreenPosition = screenPos,
-                                                Distance = distance,
-                                                Health = health,
-                                                MaxHealth = maxHealth,
-                                                HealthPercent = health / maxHealth,
-                                                FOVDistance = GetDistanceFromMouse(screenPos),
-                                                EntityType = entityType,
-                                                OnScreen = onScreen
-                                            })
-                                        end
+                            local screenPos, onScreen = WorldToScreen(predictedPos)
+                            if screenPos then
+                                local isVisible = not checkVisibility or
+                                                      IsTargetVisible(origin, predictedPos, model)
+                                
+                                if isVisible then
+                                    local isStickyTarget = stickyEnabled and currentTarget == model
+                                    local fovDistSq = GetDistanceFromMouseSq(screenPos)
+                                    local inFOV = fovDistSq <= fovSq
+                                    
+                                    if isStickyTarget then
+                                        stickyTarget = {
+                                            Model = model,
+                                            Part = targetPart,
+                                            Position = predictedPos,
+                                            ScreenPosition = screenPos,
+                                            Distance = distance,
+                                            Health = health,
+                                            MaxHealth = maxHealth,
+                                            HealthPercent = health / maxHealth,
+                                            FOVDistance = mathSqrt(fovDistSq),
+                                            EntityType = entityType,
+                                            OnScreen = onScreen
+                                        }
+                                    elseif inFOV then
+                                        tableInsert(targets, {
+                                            Model = model,
+                                            Part = targetPart,
+                                            Position = predictedPos,
+                                            ScreenPosition = screenPos,
+                                            Distance = distance,
+                                            Health = health,
+                                            MaxHealth = maxHealth,
+                                            HealthPercent = health / maxHealth,
+                                            FOVDistance = mathSqrt(fovDistSq),
+                                            EntityType = entityType,
+                                            OnScreen = onScreen
+                                        })
                                     end
                                 end
                             end
@@ -437,57 +475,86 @@ local function GetValidTargets()
         end
     end
 
-    return targets
+    return targets, stickyTarget
 end
 
-local function SelectTarget(targets)
+local function SelectTarget(targets, stickyTarget)
+    if stickyTarget then
+        return stickyTarget
+    end
+    
     if #targets == 0 then
         return nil
     end
 
-    if ESPSettings.AimbotStickyTarget and AimbotState.CurrentTarget then
-        for _, target in ipairs(targets) do
-            if target.Model == AimbotState.CurrentTarget then
-                return target
-            end
-        end
-    end
-
     local priority = ESPSettings.AimbotPriority
-
-    table.sort(targets, function(a, b)
-        if priority == "Closest" then
-            return a.Distance < b.Distance
-        elseif priority == "Lowest Health" then
-            return a.Health < b.Health
-        elseif priority == "Highest Health" then
-            return a.Health > b.Health
-        elseif priority == "Closest to Crosshair" then
-            return a.FOVDistance < b.FOVDistance
-        else
-            return a.FOVDistance < b.FOVDistance
-        end
-    end)
+    
+    if priority == "Closest" then
+        tableSort(targets, function(a, b) return a.Distance < b.Distance end)
+    elseif priority == "Lowest Health" then
+        tableSort(targets, function(a, b) return a.Health < b.Health end)
+    elseif priority == "Highest Health" then
+        tableSort(targets, function(a, b) return a.Health > b.Health end)
+    else
+        tableSort(targets, function(a, b) return a.FOVDistance < b.FOVDistance end)
+    end
 
     return targets[1]
 end
 
-local function AimAt(screenPos)
-    if not screenPos then
+local function AimAt(targetPart)
+    if not targetPart or not targetPart.Parent then
         return
     end
-
-    local screenCenter = GetScreenCenter()
+    
+    local camera = GetCamera()
+    if not camera then
+        return
+    end
+    
+    local partCenter = targetPart.Position
+    local screenPos3D = camera:WorldToScreenPoint(partCenter)
+    
+    if screenPos3D.Z <= 0 then
+        return
+    end
+    
+    local screenPos = Vector2.new(screenPos3D.X, screenPos3D.Y)
+    local viewportSize = camera.ViewportSize
+    local screenCenter = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
+    
     local deltaX = screenPos.X - screenCenter.X
     local deltaY = (screenPos.Y + ESPSettings.AimbotYOffset) - screenCenter.Y
 
-    local smoothing = math.clamp(ESPSettings.AimbotSmoothing, 0.01, 1)
-    local moveX = deltaX * smoothing
-    local moveY = deltaY * smoothing
-
-    if math.abs(moveX) < 0.5 and math.abs(moveY) < 0.5 then
+    local distance = mathSqrt(deltaX * deltaX + deltaY * deltaY)
+    
+    if distance < 1 then
         return
     end
+
+    local smoothing = mathClamp(ESPSettings.AimbotSmoothing, 0.01, 1)
+    
+    local maxMovePerFrame = 15 + (85 * smoothing)
+    local minMoveThreshold = 0.5
+    
+    local speedFactor
+    if distance < 50 then
+        speedFactor = (distance / 50) * smoothing
+    else
+        speedFactor = smoothing
+    end
+    
+    local moveAmount = mathMin(distance * speedFactor, maxMovePerFrame)
+    
+    if moveAmount < minMoveThreshold then
+        return
+    end
+    
+    local dirX = deltaX / distance
+    local dirY = deltaY / distance
+    
+    local moveX = dirX * moveAmount
+    local moveY = dirY * moveAmount
 
     pcall(function()
         mousemoverel(moveX, moveY)
@@ -570,8 +637,8 @@ local function UpdateTargetIndicator(target)
     end
 
     indicator.Position = Vector2.new(screenPos.X, screenPos.Y - 25)
-    indicator.Text = string.format("[TARGET] %s | %d HP | %dm", target.EntityType, math.floor(target.Health),
-        math.floor(target.Distance))
+    indicator.Text = string.format("[TARGET] %s | %d HP | %dm", target.EntityType, mathFloor(target.Health),
+        mathFloor(target.Distance))
     indicator.Visible = true
 end
 
@@ -587,6 +654,40 @@ local function CleanupAimbot()
     AimbotState.CurrentTarget = nil
     AimbotState.CurrentTargetPart = nil
     AimbotState.IsAiming = false
+end
+
+local function GetCustomCamera()
+    local customCam = LocalPlayer:FindFirstChild("WorldModel")
+    if customCam then
+        customCam = customCam:FindFirstChild("WorldModel")
+        if customCam then
+            customCam = customCam:FindFirstChild("Model")
+            if customCam then
+                customCam = customCam:FindFirstChild("Cam")
+                if customCam then
+                    customCam = customCam:FindFirstChild("CAM")
+                    if customCam and customCam:IsA("Camera") then
+                        return customCam
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function GetCameraController()
+    local worldModel = LocalPlayer:FindFirstChild("WorldModel")
+    if worldModel then
+        worldModel = worldModel:FindFirstChild("WorldModel")
+        if worldModel then
+            local model = worldModel:FindFirstChild("Model")
+            if model then
+                return model:FindFirstChild("Cam")
+            end
+        end
+    end
+    return nil
 end
 
 local function UpdateAimbot()
@@ -605,20 +706,19 @@ local function UpdateAimbot()
 
     if not AimbotState.IsAiming then
         UpdateTargetIndicator(nil)
-        if not ESPSettings.AimbotStickyTarget then
-            AimbotState.CurrentTarget = nil
-        end
+        AimbotState.CurrentTarget = nil
+        AimbotState.CurrentTargetPart = nil
         return
     end
 
-    local targets = GetValidTargets()
-    local bestTarget = SelectTarget(targets)
+    local targets, stickyTarget = GetValidTargets()
+    local bestTarget = SelectTarget(targets, stickyTarget)
 
     if bestTarget then
         AimbotState.CurrentTarget = bestTarget.Model
         AimbotState.CurrentTargetPart = bestTarget.Part
         UpdateTargetIndicator(bestTarget)
-        AimAt(bestTarget.ScreenPosition)
+        AimAt(bestTarget.Part)
     else
         AimbotState.CurrentTarget = nil
         AimbotState.CurrentTargetPart = nil
@@ -673,7 +773,7 @@ state.OverlayRoot = nil
 
 local function TrackConnection(connection)
     if connection then
-        table.insert(state.Connections, connection)
+        tableInsert(state.Connections, connection)
     end
     return connection
 end
@@ -698,14 +798,14 @@ local function ApplyHighlightSettings(highlight, entityType)
         return
     end
 
-    local fillColor = entityType == "Zombie" and ESPSettings.ZombieFillColor or ESPSettings.PlayerFillColor
-    local outlineColor = entityType == "Zombie" and ESPSettings.ZombieOutlineColor or ESPSettings.PlayerOutlineColor
+    local isZombie = entityType == "Zombie"
+    local fillColor = isZombie and ESPSettings.ZombieFillColor or ESPSettings.PlayerFillColor
+    local outlineColor = isZombie and ESPSettings.ZombieOutlineColor or ESPSettings.PlayerOutlineColor
 
     highlight.FillColor = fillColor
     highlight.OutlineColor = outlineColor
-    highlight.FillTransparency = ESPSettings.ChamsEnabled and math.clamp(ESPSettings.FillTransparency, 0, 1) or 1
-    highlight.OutlineTransparency = ESPSettings.OutlineEnabled and math.clamp(ESPSettings.OutlineTransparency, 0, 1) or
-                                        1
+    highlight.FillTransparency = ESPSettings.ChamsEnabled and mathClamp(ESPSettings.FillTransparency, 0, 1) or 1
+    highlight.OutlineTransparency = ESPSettings.OutlineEnabled and mathClamp(ESPSettings.OutlineTransparency, 0, 1) or 1
     highlight.Enabled = true
 end
 
@@ -759,7 +859,7 @@ end
 
 local function GetOrCreateOverlayEntry()
     if #OverlayPool > 0 then
-        return table.remove(OverlayPool)
+        return tableRemove(OverlayPool)
     end
 
     local overlayFrame = Instance.new("Frame")
@@ -860,7 +960,7 @@ local function ReturnOverlayEntry(entry)
         entry.HealthFill.Size = UDim2.new(1, 0, 0, 0)
     end
 
-    table.insert(OverlayPool, entry)
+    tableInsert(OverlayPool, entry)
 end
 
 local function GetModelHealth(model)
@@ -881,41 +981,40 @@ local function ComputeScreenBounds(model, camera)
         return nil
     end
 
-    local half = size * 0.5
-    if half.X <= 0 or half.Y <= 0 or half.Z <= 0 then
+    local hx, hy, hz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
+    if hx <= 0 or hy <= 0 or hz <= 0 then
         return nil
     end
 
-    local offsets = {Vector3.new(-half.X, -half.Y, -half.Z), Vector3.new(-half.X, -half.Y, half.Z),
-                     Vector3.new(-half.X, half.Y, -half.Z), Vector3.new(-half.X, half.Y, half.Z),
-                     Vector3.new(half.X, -half.Y, -half.Z), Vector3.new(half.X, -half.Y, half.Z),
-                     Vector3.new(half.X, half.Y, -half.Z), Vector3.new(half.X, half.Y, half.Z)}
-
-    local minX, minY = math.huge, math.huge
-    local maxX, maxY = -math.huge, -math.huge
+    local minX, minY = mathHuge, mathHuge
+    local maxX, maxY = -mathHuge, -mathHuge
     local anyVisible = false
-    local processed = false
 
-    for _, offset in ipairs(offsets) do
-        local worldPoint = pivotCFrame:PointToWorldSpace(offset)
+    local cornerOffsets = {
+        {-hx, -hy, -hz}, {-hx, -hy, hz}, {-hx, hy, -hz}, {-hx, hy, hz},
+        {hx, -hy, -hz}, {hx, -hy, hz}, {hx, hy, -hz}, {hx, hy, hz}
+    }
+    
+    for i = 1, 8 do
+        local c = cornerOffsets[i]
+        local worldPoint = pivotCFrame:PointToWorldSpace(Vector3.new(c[1], c[2], c[3]))
         local screenPos, onScreen = camera:WorldToScreenPoint(worldPoint)
-        processed = true
         if screenPos.Z > 0 then
-            minX = math.min(minX, screenPos.X)
-            minY = math.min(minY, screenPos.Y)
-            maxX = math.max(maxX, screenPos.X)
-            maxY = math.max(maxY, screenPos.Y)
+            local sx, sy = screenPos.X, screenPos.Y
+            if sx < minX then minX = sx end
+            if sy < minY then minY = sy end
+            if sx > maxX then maxX = sx end
+            if sy > maxY then maxY = sy end
             anyVisible = anyVisible or onScreen
         end
     end
 
-    if not processed or not anyVisible or minX == math.huge or minY == math.huge or maxX == -math.huge or maxY ==
-        -math.huge then
+    if not anyVisible or minX == mathHuge then
         return nil
     end
 
-    local width = math.max(0, maxX - minX)
-    local height = math.max(0, maxY - minY)
+    local width = maxX - minX
+    local height = maxY - minY
     if width < 2 or height < 2 then
         return nil
     end
@@ -1059,32 +1158,37 @@ local function UpdateESP(model, data)
     if boxFrame then
         boxFrame.Visible = ESPSettings.Show2DBox
         boxFrame.BorderColor3 = Theme.Border
-        boxFrame.BorderSizePixel = math.clamp(math.floor(boxHeight / 140) + 1, 1, 3)
+        boxFrame.BorderSizePixel = mathClamp(mathFloor(boxHeight / 140) + 1, 1, 3)
         boxFrame.Size = UDim2.new(1, 0, 1, 0)
     end
 
     local infoLabel = overlayEntry.InfoLabel
     if infoLabel then
-        local segments = {}
-        if ESPSettings.ShowEntityType then
-            table.insert(segments, data.EntityType)
+        local showType = ESPSettings.ShowEntityType
+        local showDist = ESPSettings.ShowDistance
+        local infoText
+        if showType and showDist then
+            infoText = data.EntityType .. " | " .. mathFloor(distance + 0.5) .. " st"
+        elseif showType then
+            infoText = data.EntityType
+        elseif showDist then
+            infoText = mathFloor(distance + 0.5) .. " st"
+        else
+            infoText = nil
         end
-        if ESPSettings.ShowDistance then
-            table.insert(segments, string.format("%d st", math.floor(distance + 0.5)))
-        end
-        local infoText = table.concat(segments, " | ")
-        if infoText ~= "" then
-            local infoHeight = math.clamp(boxHeight * 0.2, 10, 30)
+        
+        if infoText then
+            local infoHeight = mathClamp(boxHeight * 0.2, 10, 30)
             infoLabel.Visible = true
             infoLabel.Size = UDim2.fromOffset(boxWidth, infoHeight)
-            local labelOffset = math.max(4, math.floor(infoHeight * 0.5))
+            local labelOffset = mathMax(4, mathFloor(infoHeight * 0.5))
             infoLabel.Position = UDim2.new(0, 0, 0, -labelOffset - infoHeight)
             infoLabel.Text = infoText
             infoLabel.TextColor3 = Theme.TextPrimary
             infoLabel.BackgroundTransparency = 1
             infoLabel.TextXAlignment = Enum.TextXAlignment.Center
             infoLabel.TextYAlignment = Enum.TextYAlignment.Center
-            infoLabel.TextSize = math.clamp(math.floor(infoHeight * 0.7), 11, 26)
+            infoLabel.TextSize = mathClamp(mathFloor(infoHeight * 0.7), 11, 26)
         else
             infoLabel.Visible = false
         end
@@ -1095,9 +1199,9 @@ local function UpdateESP(model, data)
     if healthFrame and healthFill then
         if ESPSettings.ShowHealth then
             healthFrame.Visible = true
-            local healthWidth = math.clamp(math.floor(boxHeight * 0.08), 4, 12)
-            local spacing = math.clamp(math.floor(boxWidth * 0.06), 4, 14)
-            local verticalPadding = math.clamp(math.floor(boxHeight * 0.06), 2, 12)
+            local healthWidth = mathClamp(mathFloor(boxHeight * 0.08), 4, 12)
+            local spacing = mathClamp(mathFloor(boxWidth * 0.06), 4, 14)
+            local verticalPadding = mathClamp(mathFloor(boxHeight * 0.06), 2, 12)
             local preferredX = -healthWidth - spacing
             if boxX + preferredX < 0 then
                 preferredX = boxWidth + spacing
@@ -1111,7 +1215,7 @@ local function UpdateESP(model, data)
             local health, maxHealth = GetModelHealth(model)
             local percent = 0
             if maxHealth and maxHealth > 0 then
-                percent = math.clamp(health / maxHealth, 0, 1)
+                percent = mathClamp(health / maxHealth, 0, 1)
             end
             healthFill.Size = UDim2.new(1, 0, percent, 0)
             healthFill.BackgroundColor3 = ESPSettings.HealthBarFillColor
@@ -1254,7 +1358,7 @@ local function CleanupTrackedModels()
     for model in pairs(TrackedModels) do
         RemoveESP(model)
     end
-    table.clear(TrackedModels)
+    tableClear(TrackedModels)
 end
 
 local ScreenGuiRef
@@ -1283,244 +1387,274 @@ local function CreateGUI()
     ScreenGuiRef = screenGui
     state.ScreenGui = screenGui
 
-    library = loadstring(game:HttpGet(
-        "https://raw.githubusercontent.com/weakhoes/Roblox-UI-Libs/refs/heads/main/Venus%20Lib/Venus%20Lib%20Source.lua"))()
+    local libSuccess, libResult = pcall(function()
+        return loadstring(game:HttpGet(
+            "https://raw.githubusercontent.com/bloker0000/MultyUI/refs/heads/main/MultyUI.luau"))()
+    end)
+    
+    if not libSuccess or not libResult then
+        warn("BRM5 ESP: Failed to load UI library -", libResult)
+        return nil
+    end
+    
+    library = libResult
 
-    local main = library:Load{
-        Name = "BlackCock",
-        SizeX = 550,
-        SizeY = 500,
-        Theme = "Midnight",
-        Extension = "json",
-        Folder = "BRM5_Cheat"
-    }
+    local window = library:window({
+        name = "BRM5",
+        suffix = "ESP",
+        gameInfo = "Blackout Roleplay Modded V"
+    })
 
-    local espTab = main:Tab("ESP")
+    window:seperator({name = "ESP"})
+    local espVisibility, espSettings, espColors = window:tab({
+        name = "ESP",
+        tabs = {"Visibility", "Settings", "Colors"}
+    })
 
-    local visibilitySection = espTab:Section{
-        Name = "Visibility",
-        Side = "Left"
-    }
+    local visibilityCol = espVisibility:column({})
+    local visibilitySection = visibilityCol:section({name = "Visibility", default = true})
 
-    visibilitySection:Toggle{
-        Name = "ESP Enabled",
-        Flag = "ESP_Enabled",
-        Default = ESPSettings.Enabled,
-        Callback = function(value)
+    visibilitySection:toggle({
+        name = "ESP Enabled",
+        flag = "ESP_Enabled",
+        default = ESPSettings.Enabled,
+        seperator = true,
+        callback = function(value)
             ESPSettings.Enabled = value
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    visibilitySection:Toggle{
-        Name = "Chams",
-        Flag = "ESP_Chams",
-        Default = ESPSettings.ChamsEnabled,
-        Callback = function(value)
+    visibilitySection:toggle({
+        name = "Chams",
+        flag = "ESP_Chams",
+        default = ESPSettings.ChamsEnabled,
+        seperator = true,
+        callback = function(value)
             ESPSettings.ChamsEnabled = value
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    visibilitySection:Toggle{
-        Name = "Outline",
-        Flag = "ESP_Outline",
-        Default = ESPSettings.OutlineEnabled,
-        Callback = function(value)
+    visibilitySection:toggle({
+        name = "Outline",
+        flag = "ESP_Outline",
+        default = ESPSettings.OutlineEnabled,
+        seperator = true,
+        callback = function(value)
             ESPSettings.OutlineEnabled = value
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    visibilitySection:Toggle{
-        Name = "2D Box",
-        Flag = "ESP_2DBox",
-        Default = ESPSettings.Show2DBox,
-        Callback = function(value)
+    visibilitySection:toggle({
+        name = "2D Box",
+        flag = "ESP_2DBox",
+        default = ESPSettings.Show2DBox,
+        seperator = true,
+        callback = function(value)
             ESPSettings.Show2DBox = value
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    visibilitySection:Toggle{
-        Name = "Show Distance",
-        Flag = "ESP_Distance",
-        Default = ESPSettings.ShowDistance,
-        Callback = function(value)
+    visibilitySection:toggle({
+        name = "Show Distance",
+        flag = "ESP_Distance",
+        default = ESPSettings.ShowDistance,
+        seperator = true,
+        callback = function(value)
             ESPSettings.ShowDistance = value
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    visibilitySection:Toggle{
-        Name = "Health Bar",
-        Flag = "ESP_Health",
-        Default = ESPSettings.ShowHealth,
-        Callback = function(value)
+    visibilitySection:toggle({
+        name = "Health Bar",
+        flag = "ESP_Health",
+        default = ESPSettings.ShowHealth,
+        seperator = true,
+        callback = function(value)
             ESPSettings.ShowHealth = value
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    visibilitySection:Toggle{
-        Name = "Entity Label",
-        Flag = "ESP_EntityType",
-        Default = ESPSettings.ShowEntityType,
-        Callback = function(value)
+    visibilitySection:toggle({
+        name = "Entity Label",
+        flag = "ESP_EntityType",
+        default = ESPSettings.ShowEntityType,
+        callback = function(value)
             ESPSettings.ShowEntityType = value
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    local settingsSection = espTab:Section{
-        Name = "Settings",
-        Side = "Right"
-    }
+    local settingsCol = espSettings:column({})
+    local settingsSection = settingsCol:section({name = "Settings", default = true})
 
-    settingsSection:Slider{
-        Name = "Max Distance",
-        Text = "[value] studs",
-        Default = ESPSettings.MaxDistance,
-        Min = 100,
-        Max = 5000,
-        Float = 50,
-        Flag = "ESP_MaxDistance",
-        Callback = function(value)
+    settingsSection:slider({
+        name = "Max Distance",
+        flag = "ESP_MaxDistance",
+        min = 100,
+        max = 5000,
+        default = ESPSettings.MaxDistance,
+        interval = 50,
+        suffix = " studs",
+        seperator = true,
+        callback = function(value)
             ESPSettings.MaxDistance = value
             saveConfigToFile()
         end
-    }
+    })
 
-    settingsSection:Slider{
-        Name = "Fill Opacity",
-        Text = "[value]%",
-        Default = math.floor((1 - ESPSettings.FillTransparency) * 100),
-        Min = 0,
-        Max = 100,
-        Float = 1,
-        Flag = "ESP_FillOpacity",
-        Callback = function(value)
+    settingsSection:slider({
+        name = "Fill Opacity",
+        flag = "ESP_FillOpacity",
+        min = 0,
+        max = 100,
+        default = mathFloor((1 - ESPSettings.FillTransparency) * 100),
+        interval = 1,
+        suffix = "%",
+        seperator = true,
+        callback = function(value)
             ESPSettings.FillTransparency = 1 - (value / 100)
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    settingsSection:Slider{
-        Name = "Outline Opacity",
-        Text = "[value]%",
-        Default = math.floor((1 - ESPSettings.OutlineTransparency) * 100),
-        Min = 0,
-        Max = 100,
-        Float = 1,
-        Flag = "ESP_OutlineOpacity",
-        Callback = function(value)
+    settingsSection:slider({
+        name = "Outline Opacity",
+        flag = "ESP_OutlineOpacity",
+        min = 0,
+        max = 100,
+        default = mathFloor((1 - ESPSettings.OutlineTransparency) * 100),
+        interval = 1,
+        suffix = "%",
+        callback = function(value)
             ESPSettings.OutlineTransparency = 1 - (value / 100)
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    local playerColorsSection = espTab:Section{
-        Name = "Player Colors",
-        Side = "Left"
-    }
+    local colorsCol = espColors:column({})
+    local entityColorsSection = colorsCol:section({name = "Entity Colors", default = true})
 
-    playerColorsSection:ColorPicker{
-        Name = "Player Fill Color",
-        Default = ESPSettings.PlayerFillColor,
-        Flag = "ESP_PlayerFillColor",
-        Callback = function(color)
-            ESPSettings.PlayerFillColor = Color3.new(color.R, color.G, color.B)
+    entityColorsSection:toggle({
+        name = "Player Fill",
+        flag = "ESP_PlayerFillToggle",
+        default = true,
+        seperator = true
+    }):colorpicker({
+        flag = "ESP_PlayerFillColor",
+        color = ESPSettings.PlayerFillColor,
+        callback = function(color)
+            ESPSettings.PlayerFillColor = color
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    playerColorsSection:ColorPicker{
-        Name = "Player Outline Color",
-        Default = ESPSettings.PlayerOutlineColor,
-        Flag = "ESP_PlayerOutlineColor",
-        Callback = function(color)
-            ESPSettings.PlayerOutlineColor = Color3.new(color.R, color.G, color.B)
+    entityColorsSection:toggle({
+        name = "Player Outline",
+        flag = "ESP_PlayerOutlineToggle",
+        default = true,
+        seperator = true
+    }):colorpicker({
+        flag = "ESP_PlayerOutlineColor",
+        color = ESPSettings.PlayerOutlineColor,
+        callback = function(color)
+            ESPSettings.PlayerOutlineColor = color
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    local zombieColorsSection = espTab:Section{
-        Name = "Zombie Colors",
-        Side = "Right"
-    }
-
-    zombieColorsSection:ColorPicker{
-        Name = "Zombie Fill Color",
-        Default = ESPSettings.ZombieFillColor,
-        Flag = "ESP_ZombieFillColor",
-        Callback = function(color)
-            ESPSettings.ZombieFillColor = Color3.new(color.R, color.G, color.B)
+    entityColorsSection:toggle({
+        name = "Zombie Fill",
+        flag = "ESP_ZombieFillToggle",
+        default = true,
+        seperator = true
+    }):colorpicker({
+        flag = "ESP_ZombieFillColor",
+        color = ESPSettings.ZombieFillColor,
+        callback = function(color)
+            ESPSettings.ZombieFillColor = color
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    zombieColorsSection:ColorPicker{
-        Name = "Zombie Outline Color",
-        Default = ESPSettings.ZombieOutlineColor,
-        Flag = "ESP_ZombieOutlineColor",
-        Callback = function(color)
-            ESPSettings.ZombieOutlineColor = Color3.new(color.R, color.G, color.B)
+    entityColorsSection:toggle({
+        name = "Zombie Outline",
+        flag = "ESP_ZombieOutlineToggle",
+        default = true
+    }):colorpicker({
+        flag = "ESP_ZombieOutlineColor",
+        color = ESPSettings.ZombieOutlineColor,
+        callback = function(color)
+            ESPSettings.ZombieOutlineColor = color
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    local healthColorsSection = espTab:Section{
-        Name = "Health Bar Colors",
-        Side = "Left"
-    }
+    local colorsCol2 = espColors:column({})
+    local healthColorsSection = colorsCol2:section({name = "Health Bar Colors", default = true})
 
-    healthColorsSection:ColorPicker{
-        Name = "Health Fill Color",
-        Default = ESPSettings.HealthBarFillColor,
-        Flag = "ESP_HealthFillColor",
-        Callback = function(color)
-            ESPSettings.HealthBarFillColor = Color3.new(color.R, color.G, color.B)
+    healthColorsSection:toggle({
+        name = "Health Fill",
+        flag = "ESP_HealthFillToggle",
+        default = true,
+        seperator = true
+    }):colorpicker({
+        flag = "ESP_HealthFillColor",
+        color = ESPSettings.HealthBarFillColor,
+        callback = function(color)
+            ESPSettings.HealthBarFillColor = color
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    healthColorsSection:ColorPicker{
-        Name = "Health Background",
-        Default = ESPSettings.HealthBarBackColor,
-        Flag = "ESP_HealthBackColor",
-        Callback = function(color)
-            ESPSettings.HealthBarBackColor = Color3.new(color.R, color.G, color.B)
+    healthColorsSection:toggle({
+        name = "Health Background",
+        flag = "ESP_HealthBackToggle",
+        default = true
+    }):colorpicker({
+        flag = "ESP_HealthBackColor",
+        color = ESPSettings.HealthBarBackColor,
+        callback = function(color)
+            ESPSettings.HealthBarBackColor = color
             RefreshAllVisuals()
             saveConfigToFile()
         end
-    }
+    })
 
-    local aimbotTab = main:Tab("Aimbot")
+    window:seperator({name = "Aimbot"})
+    local aimbotMain, aimbotTargets, aimbotFOV = window:tab({
+        name = "Aimbot",
+        tabs = {"Main", "Targets", "FOV"}
+    })
 
-    local aimbotSection = aimbotTab:Section{
-        Name = "Aimbot Settings",
-        Side = "Left"
-    }
+    local aimbotCol = aimbotMain:column({})
+    local aimbotSection = aimbotCol:section({name = "Aimbot Settings", default = true})
 
-    aimbotSection:Toggle{
-        Name = "Aimbot Enabled",
-        Flag = "Aimbot_Enabled",
-        Default = ESPSettings.AimbotEnabled,
-        Callback = function(value)
+    aimbotSection:toggle({
+        name = "Aimbot Enabled",
+        flag = "Aimbot_Enabled",
+        default = ESPSettings.AimbotEnabled,
+        seperator = true,
+        callback = function(value)
             ESPSettings.AimbotEnabled = value
             if not value then
                 AimbotState.IsAiming = false
@@ -1528,7 +1662,7 @@ local function CreateGUI()
             end
             saveConfigToFile()
         end
-    }
+    })
 
     local savedAimbotKey = ESPSettings.AimbotKey
     local aimbotKeyEnum
@@ -1546,341 +1680,331 @@ local function CreateGUI()
         aimbotKeyEnum = Enum.UserInputType.MouseButton2
     end
 
-    aimbotSection:Keybind{
-        Name = "Aimbot Key",
-        Flag = "Aimbot_Key",
-        Default = aimbotKeyEnum,
-        Callback = function(key, fromsetting)
-            if fromsetting then
-                ESPSettings.AimbotKey = key.Name
-                saveConfigToFile()
+    aimbotSection:keybind({
+        name = "Aimbot Key",
+        flag = "Aimbot_Key",
+        default = aimbotKeyEnum,
+        mode = "Hold",
+        seperator = true,
+        callback = function(active)
+            if ESPSettings.AimbotKeyMode == "Hold" then
+                AimbotState.IsAiming = active
             end
         end
-    }
+    })
 
-    aimbotSection:Dropdown{
-        Name = "Key Mode",
-        Flag = "Aimbot_KeyMode",
-        Default = ESPSettings.AimbotKeyMode,
-        Content = {"Hold", "Toggle"},
-        Callback = function(value)
+    aimbotSection:dropdown({
+        name = "Key Mode",
+        flag = "Aimbot_KeyMode",
+        items = {"Hold", "Toggle"},
+        default = ESPSettings.AimbotKeyMode,
+        seperator = true,
+        callback = function(value)
             ESPSettings.AimbotKeyMode = value
             if value == "Hold" then
                 AimbotState.IsAiming = false
             end
             saveConfigToFile()
         end
-    }
+    })
 
-    aimbotSection:Dropdown{
-        Name = "Target Part",
-        Flag = "Aimbot_TargetPart",
-        Default = ESPSettings.AimbotTargetPart,
-        Content = {"Head", "HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso", "LeftArm", "RightArm", "LeftLeg",
-                   "RightLeg"},
-        Callback = function(value)
+    aimbotSection:dropdown({
+        name = "Target Part",
+        flag = "Aimbot_TargetPart",
+        items = {"Head", "HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso", "LeftArm", "RightArm", "LeftLeg", "RightLeg"},
+        default = ESPSettings.AimbotTargetPart,
+        seperator = true,
+        callback = function(value)
             ESPSettings.AimbotTargetPart = value
             saveConfigToFile()
         end
-    }
+    })
 
-    aimbotSection:Dropdown{
-        Name = "Priority",
-        Flag = "Aimbot_Priority",
-        Default = ESPSettings.AimbotPriority,
-        Content = {"Closest to Crosshair", "Closest", "Lowest Health", "Highest Health"},
-        Callback = function(value)
+    aimbotSection:dropdown({
+        name = "Priority",
+        flag = "Aimbot_Priority",
+        items = {"Closest to Crosshair", "Closest", "Lowest Health", "Highest Health"},
+        default = ESPSettings.AimbotPriority,
+        seperator = true,
+        callback = function(value)
             ESPSettings.AimbotPriority = value
             saveConfigToFile()
         end
-    }
+    })
 
-    aimbotSection:Slider{
-        Name = "Smoothing",
-        Text = "[value]",
-        Default = ESPSettings.AimbotSmoothing,
-        Min = 0.01,
-        Max = 1,
-        Float = 0.01,
-        Flag = "Aimbot_Smoothing",
-        Callback = function(value)
+    aimbotSection:slider({
+        name = "Smoothing",
+        flag = "Aimbot_Smoothing",
+        min = 0.01,
+        max = 1,
+        default = ESPSettings.AimbotSmoothing,
+        interval = 0.01,
+        seperator = true,
+        callback = function(value)
             ESPSettings.AimbotSmoothing = value
             saveConfigToFile()
         end
-    }
+    })
 
-    aimbotSection:Slider{
-        Name = "Max Distance",
-        Text = "[value] studs",
-        Default = ESPSettings.AimbotMaxDistance,
-        Min = 100,
-        Max = 5000,
-        Float = 50,
-        Flag = "Aimbot_MaxDistance",
-        Callback = function(value)
+    aimbotSection:slider({
+        name = "Max Distance",
+        flag = "Aimbot_MaxDistance",
+        min = 100,
+        max = 5000,
+        default = ESPSettings.AimbotMaxDistance,
+        interval = 50,
+        suffix = " studs",
+        callback = function(value)
             ESPSettings.AimbotMaxDistance = value
             saveConfigToFile()
         end
-    }
+    })
 
-    local targetSection = aimbotTab:Section{
-        Name = "Target Filters",
-        Side = "Left"
-    }
+    local aimbotCol2 = aimbotMain:column({})
+    local predictionSection = aimbotCol2:section({name = "Prediction", default = true})
 
-    targetSection:Toggle{
-        Name = "Target Players",
-        Flag = "Aimbot_TargetPlayers",
-        Default = ESPSettings.AimbotTargetPlayers,
-        Callback = function(value)
-            ESPSettings.AimbotTargetPlayers = value
-            saveConfigToFile()
-        end
-    }
-
-    targetSection:Toggle{
-        Name = "Target Zombies",
-        Flag = "Aimbot_TargetZombies",
-        Default = ESPSettings.AimbotTargetZombies,
-        Callback = function(value)
-            ESPSettings.AimbotTargetZombies = value
-            saveConfigToFile()
-        end
-    }
-
-    targetSection:Toggle{
-        Name = "Visibility Check",
-        Flag = "Aimbot_VisibilityCheck",
-        Default = ESPSettings.AimbotVisibilityCheck,
-        Callback = function(value)
-            ESPSettings.AimbotVisibilityCheck = value
-            saveConfigToFile()
-        end
-    }
-
-    targetSection:Toggle{
-        Name = "Sticky Target",
-        Flag = "Aimbot_StickyTarget",
-        Default = ESPSettings.AimbotStickyTarget,
-        Callback = function(value)
-            ESPSettings.AimbotStickyTarget = value
-            saveConfigToFile()
-        end
-    }
-
-    targetSection:Slider{
-        Name = "Min Health Threshold",
-        Text = "[value] HP",
-        Default = ESPSettings.AimbotMinHealth,
-        Min = 0,
-        Max = 100,
-        Float = 1,
-        Flag = "Aimbot_MinHealth",
-        Callback = function(value)
-            ESPSettings.AimbotMinHealth = value
-            saveConfigToFile()
-        end
-    }
-
-    local predictionSection = aimbotTab:Section{
-        Name = "Prediction",
-        Side = "Right"
-    }
-
-    predictionSection:Toggle{
-        Name = "Enable Prediction",
-        Flag = "Aimbot_Prediction",
-        Default = ESPSettings.AimbotPrediction,
-        Callback = function(value)
+    predictionSection:toggle({
+        name = "Enable Prediction",
+        flag = "Aimbot_Prediction",
+        default = ESPSettings.AimbotPrediction,
+        seperator = true,
+        callback = function(value)
             ESPSettings.AimbotPrediction = value
             saveConfigToFile()
         end
-    }
+    })
 
-    predictionSection:Slider{
-        Name = "Prediction Amount",
-        Text = "[value]s",
-        Default = ESPSettings.AimbotPredictionAmount,
-        Min = 0.01,
-        Max = 0.5,
-        Float = 0.01,
-        Flag = "Aimbot_PredictionAmount",
-        Callback = function(value)
+    predictionSection:slider({
+        name = "Prediction Amount",
+        flag = "Aimbot_PredictionAmount",
+        min = 0.01,
+        max = 0.5,
+        default = ESPSettings.AimbotPredictionAmount,
+        interval = 0.01,
+        suffix = "s",
+        seperator = true,
+        callback = function(value)
             ESPSettings.AimbotPredictionAmount = value
             saveConfigToFile()
         end
-    }
+    })
 
-    predictionSection:Slider{
-        Name = "Y Offset (Calibration)",
-        Text = "[value]px",
-        Default = ESPSettings.AimbotYOffset - 53,
-        Min = -100,
-        Max = 100,
-        Float = 1,
-        Flag = "Aimbot_YOffset",
-        Callback = function(value)
+    predictionSection:slider({
+        name = "Y Offset (Calibration)",
+        flag = "Aimbot_YOffset",
+        min = -100,
+        max = 100,
+        default = ESPSettings.AimbotYOffset - 53,
+        interval = 1,
+        suffix = "px",
+        seperator = true,
+        callback = function(value)
             ESPSettings.AimbotYOffset = value + 53
             saveConfigToFile()
         end
-    }
+    })
 
-    local fovSection = aimbotTab:Section{
-        Name = "FOV Settings",
-        Side = "Right"
-    }
-
-    fovSection:Toggle{
-        Name = "Show FOV Circle",
-        Flag = "Aimbot_ShowFOV",
-        Default = ESPSettings.AimbotShowFOV,
-        Callback = function(value)
-            ESPSettings.AimbotShowFOV = value
-            saveConfigToFile()
-        end
-    }
-
-    fovSection:Slider{
-        Name = "FOV Radius",
-        Text = "[value]px",
-        Default = ESPSettings.AimbotFOV,
-        Min = 10,
-        Max = 500,
-        Float = 5,
-        Flag = "Aimbot_FOV",
-        Callback = function(value)
-            ESPSettings.AimbotFOV = value
-            saveConfigToFile()
-        end
-    }
-
-    fovSection:ColorPicker{
-        Name = "FOV Color",
-        Default = ESPSettings.AimbotFOVColor,
-        Flag = "Aimbot_FOVColor",
-        Callback = function(color)
-            ESPSettings.AimbotFOVColor = Color3.new(color.R, color.G, color.B)
-            saveConfigToFile()
-        end
-    }
-
-    fovSection:Slider{
-        Name = "FOV Thickness",
-        Text = "[value]px",
-        Default = ESPSettings.AimbotFOVThickness,
-        Min = 1,
-        Max = 5,
-        Float = 0.5,
-        Flag = "Aimbot_FOVThickness",
-        Callback = function(value)
-            ESPSettings.AimbotFOVThickness = value
-            saveConfigToFile()
-        end
-    }
-
-    fovSection:Slider{
-        Name = "FOV Sides",
-        Text = "[value]",
-        Default = ESPSettings.AimbotFOVSides,
-        Min = 12,
-        Max = 120,
-        Float = 6,
-        Flag = "Aimbot_FOVSides",
-        Callback = function(value)
-            ESPSettings.AimbotFOVSides = value
-            saveConfigToFile()
-        end
-    }
-
-    fovSection:Toggle{
-        Name = "FOV Filled",
-        Flag = "Aimbot_FOVFilled",
-        Default = ESPSettings.AimbotFOVFilled,
-        Callback = function(value)
-            ESPSettings.AimbotFOVFilled = value
-            saveConfigToFile()
-        end
-    }
-
-    fovSection:Slider{
-        Name = "FOV Transparency",
-        Text = "[value]%",
-        Default = ESPSettings.AimbotFOVTransparency * 100,
-        Min = 0,
-        Max = 100,
-        Float = 5,
-        Flag = "Aimbot_FOVTransparency",
-        Callback = function(value)
-            ESPSettings.AimbotFOVTransparency = value / 100
-            saveConfigToFile()
-        end
-    }
-
-    local visualSection = aimbotTab:Section{
-        Name = "Visuals",
-        Side = "Right"
-    }
-
-    visualSection:Toggle{
-        Name = "Show Target Info",
-        Flag = "Aimbot_ShowTargetInfo",
-        Default = ESPSettings.AimbotShowTargetInfo,
-        Callback = function(value)
+    predictionSection:toggle({
+        name = "Show Target Info",
+        flag = "Aimbot_ShowTargetInfo",
+        default = ESPSettings.AimbotShowTargetInfo,
+        callback = function(value)
             ESPSettings.AimbotShowTargetInfo = value
             saveConfigToFile()
         end
-    }
+    })
 
-    local configTab = main:Tab("Config")
+    local targetCol = aimbotTargets:column({})
+    local targetSection = targetCol:section({name = "Target Filters", default = true})
 
-    local configSection = configTab:Section{
-        Name = "Configuration",
-        Side = "Left"
-    }
-
-    configSection:Button{
-        Name = "Save Config",
-        Callback = function()
+    targetSection:toggle({
+        name = "Target Players",
+        flag = "Aimbot_TargetPlayers",
+        default = ESPSettings.AimbotTargetPlayers,
+        seperator = true,
+        callback = function(value)
+            ESPSettings.AimbotTargetPlayers = value
             saveConfigToFile()
         end
-    }
+    })
 
-    local uiSection = configTab:Section{
-        Name = "UI Settings",
-        Side = "Right"
-    }
-
-    local savedToggleKey
-    local successToggle, toggleResult = pcall(function()
-        return ESPSettings.UIToggleKey and Enum.KeyCode[ESPSettings.UIToggleKey]
-    end)
-    if successToggle and toggleResult then
-        savedToggleKey = toggleResult
-    else
-        savedToggleKey = Enum.KeyCode.Insert
-    end
-    uiSection:Keybind{
-        Name = "Toggle UI",
-        Flag = "UI_Toggle",
-        Default = savedToggleKey,
-        Blacklist = {Enum.UserInputType.MouseButton1, Enum.UserInputType.MouseButton2, Enum.UserInputType.MouseButton3},
-        Callback = function(key, fromsetting)
-            if fromsetting then
-                ESPSettings.UIToggleKey = key.Name
-                saveConfigToFile()
-            else
-                library:Close()
-            end
+    targetSection:toggle({
+        name = "Target Zombies",
+        flag = "Aimbot_TargetZombies",
+        default = ESPSettings.AimbotTargetZombies,
+        seperator = true,
+        callback = function(value)
+            ESPSettings.AimbotTargetZombies = value
+            saveConfigToFile()
         end
-    }
+    })
 
-    uiSection:Button{
-        Name = "Unload Script",
-        Callback = function()
+    targetSection:toggle({
+        name = "Visibility Check",
+        flag = "Aimbot_VisibilityCheck",
+        default = ESPSettings.AimbotVisibilityCheck,
+        seperator = true,
+        callback = function(value)
+            ESPSettings.AimbotVisibilityCheck = value
+            saveConfigToFile()
+        end
+    })
+
+    targetSection:toggle({
+        name = "Sticky Target",
+        flag = "Aimbot_StickyTarget",
+        default = ESPSettings.AimbotStickyTarget,
+        seperator = true,
+        callback = function(value)
+            ESPSettings.AimbotStickyTarget = value
+            saveConfigToFile()
+        end
+    })
+
+    targetSection:slider({
+        name = "Min Health Threshold",
+        flag = "Aimbot_MinHealth",
+        min = 0,
+        max = 100,
+        default = ESPSettings.AimbotMinHealth,
+        interval = 1,
+        suffix = " HP",
+        callback = function(value)
+            ESPSettings.AimbotMinHealth = value
+            saveConfigToFile()
+        end
+    })
+
+    local fovCol = aimbotFOV:column({})
+    local fovSection = fovCol:section({name = "FOV Settings", default = true})
+
+    fovSection:toggle({
+        name = "Show FOV Circle",
+        flag = "Aimbot_ShowFOV",
+        default = ESPSettings.AimbotShowFOV,
+        seperator = true,
+        callback = function(value)
+            ESPSettings.AimbotShowFOV = value
+            saveConfigToFile()
+        end
+    })
+
+    fovSection:slider({
+        name = "FOV Radius",
+        flag = "Aimbot_FOV",
+        min = 10,
+        max = 500,
+        default = ESPSettings.AimbotFOV,
+        interval = 5,
+        suffix = "px",
+        seperator = true,
+        callback = function(value)
+            ESPSettings.AimbotFOV = value
+            saveConfigToFile()
+        end
+    })
+
+    fovSection:toggle({
+        name = "FOV Color",
+        flag = "Aimbot_FOVColorToggle",
+        default = true,
+        seperator = true
+    }):colorpicker({
+        flag = "Aimbot_FOVColor",
+        color = ESPSettings.AimbotFOVColor,
+        callback = function(color)
+            ESPSettings.AimbotFOVColor = color
+            saveConfigToFile()
+        end
+    })
+
+    fovSection:slider({
+        name = "FOV Thickness",
+        flag = "Aimbot_FOVThickness",
+        min = 1,
+        max = 5,
+        default = ESPSettings.AimbotFOVThickness,
+        interval = 0.5,
+        suffix = "px",
+        seperator = true,
+        callback = function(value)
+            ESPSettings.AimbotFOVThickness = value
+            saveConfigToFile()
+        end
+    })
+
+    fovSection:slider({
+        name = "FOV Sides",
+        flag = "Aimbot_FOVSides",
+        min = 12,
+        max = 120,
+        default = ESPSettings.AimbotFOVSides,
+        interval = 6,
+        seperator = true,
+        callback = function(value)
+            ESPSettings.AimbotFOVSides = value
+            saveConfigToFile()
+        end
+    })
+
+    fovSection:toggle({
+        name = "FOV Filled",
+        flag = "Aimbot_FOVFilled",
+        default = ESPSettings.AimbotFOVFilled,
+        seperator = true,
+        callback = function(value)
+            ESPSettings.AimbotFOVFilled = value
+            saveConfigToFile()
+        end
+    })
+
+    fovSection:slider({
+        name = "FOV Transparency",
+        flag = "Aimbot_FOVTransparency",
+        min = 0,
+        max = 100,
+        default = ESPSettings.AimbotFOVTransparency * 100,
+        interval = 5,
+        suffix = "%",
+        callback = function(value)
+            ESPSettings.AimbotFOVTransparency = value / 100
+            saveConfigToFile()
+        end
+    })
+
+    window:seperator({name = "Config"})
+    local configTab = window:tab({
+        name = "Config",
+        tabs = {"Settings"}
+    })
+
+    local configCol = configTab:column({})
+    local configSection = configCol:section({name = "Configuration", default = true})
+
+    configSection:button({
+        name = "Save Config",
+        callback = function()
+            saveConfigToFile()
+            library.notifications:create_notification({
+                name = "Config Saved",
+                info = "Your settings have been saved.",
+                lifetime = 3
+            })
+        end
+    })
+
+    local configCol2 = configTab:column({})
+    local uiSection = configCol2:section({name = "UI Settings", default = true})
+
+    uiSection:button({
+        name = "Unload Script",
+        callback = function()
             CleanupResources()
-            library:Unload()
+            library:unload_menu()
         end
-    }
+    })
+
+    library:init_config(window)
 
     state.Library = library
     return screenGui
@@ -1938,22 +2062,26 @@ TrackConnection(UserInputService.InputEnded:Connect(function(input, gameProcesse
     end
 end))
 
-TrackConnection(RunService.RenderStepped:Connect(function()
+local ToRemoveBuffer = {}
+
+TrackConnection(RunService.RenderStepped:Connect(function(deltaTime)
     local now = time()
     if now - LastUpdate < UPDATE_INTERVAL then
         return
     end
     LastUpdate = now
 
-    local toRemove = {}
+    local removeCount = 0
     for model, data in pairs(TrackedModels) do
         if not UpdateESP(model, data) then
-            table.insert(toRemove, model)
+            removeCount = removeCount + 1
+            ToRemoveBuffer[removeCount] = model
         end
     end
 
-    for _, model in ipairs(toRemove) do
-        RemoveESP(model)
+    for i = 1, removeCount do
+        RemoveESP(ToRemoveBuffer[i])
+        ToRemoveBuffer[i] = nil
     end
 
     UpdateAimbot()
@@ -1979,7 +2107,7 @@ local function CleanupResources()
             entry.Overlay:Destroy()
         end
     end
-    table.clear(OverlayPool)
+    tableClear(OverlayPool)
     OverlayRoot = nil
     state.OverlayRoot = nil
     LastUpdate = 0
@@ -1989,18 +2117,18 @@ local function CleanupResources()
             connection:Disconnect()
         end
     end
-    table.clear(state.Connections)
+    tableClear(state.Connections)
 
     if ScreenGuiRef then
         ScreenGuiRef:Destroy()
         ScreenGuiRef = nil
     end
     state.ScreenGui = nil
-    table.clear(ColorDisplays)
+    tableClear(ColorDisplays)
 
     if library then
         pcall(function()
-            library:Unload()
+            library:unload_menu()
         end)
         library = nil
     end
